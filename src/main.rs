@@ -1,10 +1,9 @@
 use std::collections::HashMap;
-use std::env;
 use std::io;
 
 use rocket::figment::providers::Env;
 use rocket::futures::TryStreamExt;
-use rocket::{Error, State};
+use rocket::State;
 use rocket::request::{FromRequest, Request, Outcome};
 use rocket::serde::{Serialize, Deserialize, json::Json};
 use rocket::http::Status;
@@ -16,7 +15,7 @@ use rusoto_s3::{S3Client, S3, PutObjectRequest, StreamingBody};
 
 use reqwest::header::CONTENT_TYPE;
 
-use chrono::prelude::{DateTime, Utc};
+use chrono::prelude::Utc;
 
 use url::Url;
 
@@ -31,7 +30,6 @@ fn index() -> &'static str {
 struct ArchiveRequest {
     pub source: String,
     pub suffix: String,
-    pub public: bool,
 }
 
 #[derive(Serialize)]
@@ -94,10 +92,14 @@ struct ErrorInfo {
 }
 
 #[post("/archive", data = "<request>")]
+#[allow(unused_variables)]
 async fn archive(token: BearerToken, request: Json<ArchiveRequest>, s: &State<CommonState>) -> Result<Json<ArchiveResult>, ArchiveFailure> {
     let resp = match reqwest::get(&request.source).await {
         Ok(r) => r,
-        Err(e) => return Err(ArchiveError::ContentFetchFailed.into()),
+        Err(e) => {
+            error!("failed to fetch source metadata: {}", e);
+            return Err(ArchiveError::ContentFetchFailed.into())
+        },
     };
 
     if resp.status() != reqwest::StatusCode::OK {

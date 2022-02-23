@@ -21,9 +21,9 @@ use url::Url;
 
 #[macro_use] extern crate rocket;
 
-#[get("/")]
-fn index() -> &'static str {
-    "Hello, world!"
+#[get("/health")]
+fn health() -> &'static str {
+    "Ok"
 }
 
 #[derive(Deserialize)]
@@ -35,6 +35,8 @@ struct ArchiveRequest {
 #[derive(Serialize)]
 struct ArchiveResult {
     pub location: String,
+    pub content_length: Option<u64>,
+    pub content_type: Option<String>,
 }
 
 struct BearerToken(pub String);
@@ -94,6 +96,7 @@ struct ErrorInfo {
 #[post("/archive", data = "<request>")]
 #[allow(unused_variables)]
 async fn archive(token: BearerToken, request: Json<ArchiveRequest>, s: &State<CommonState>) -> Result<Json<ArchiveResult>, ArchiveFailure> {
+    info!("fetching content: source = {}, suffix = {}", &request.source, &request.suffix);
     let resp = match reqwest::get(&request.source).await {
         Ok(r) => r,
         Err(e) => {
@@ -103,6 +106,7 @@ async fn archive(token: BearerToken, request: Json<ArchiveRequest>, s: &State<Co
     };
 
     if resp.status() != reqwest::StatusCode::OK {
+        error!("received unsuccessful status code: {}", resp.status());
         return Err(ArchiveError::ContentFetchFailed.into());
     }
 
@@ -122,7 +126,7 @@ async fn archive(token: BearerToken, request: Json<ArchiveRequest>, s: &State<Co
     put.body = Some(body);
     put.acl = Some("public-read".into());
     put.content_length = content_length.map(|l| l as i64);
-    put.content_type = content_type;
+    put.content_type = content_type.clone();
     put.cache_control = Some("private, max-age=604800".into());
     put.metadata = Some(HashMap::from([
         ("source".into(), request.0.source.into()),
@@ -131,17 +135,25 @@ async fn archive(token: BearerToken, request: Json<ArchiveRequest>, s: &State<Co
 
     let _ = match s.client.put_object(put).await {
         Ok(r) => r,
-        Err(_) => return Err(ArchiveError::ContentUploadFailed.into()),
+        Err(e) => {
+            error!("put object operation failed: {}", e);
+            return Err(ArchiveError::ContentUploadFailed.into())
+        },
     };
 
     let suffix = format!("/{}/{}", s.bucket_name, request.0.suffix.as_str());
     let url = match s.public_url.join(&suffix) {
         Ok(u) => u,
-        Err(_) => return Err(ArchiveError::InvalidConfiguration.into()),
+        Err(e) => {
+            error!("could not combine uri parts {} and {}: {}", s.public_url, suffix, e);
+            return Err(ArchiveError::InvalidConfiguration.into())
+        },
     };
 
     Ok(ArchiveResult {
         location: url.into(),
+        content_length,
+        content_type,
     }.into())
 }
 
@@ -187,7 +199,7 @@ async fn main() -> Result<(), rocket::Error> {
                 public_url: public_url,
             }))
         }))
-        .mount("/", routes![index, archive])
+        .mount("/", routes![health, archive])
         .ignite().await?
         .launch().await
 
